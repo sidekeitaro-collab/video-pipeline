@@ -1,0 +1,64 @@
+name: Daily Short Video Post
+
+on:
+  schedule:
+    - cron: "0 12 * * *"  # 毎日 21:00 JST (UTC+9)
+  workflow_dispatch:
+    inputs:
+      topic:
+        description: "動画のテーマ（省略時はランダムトピックリストから選択）"
+        required: false
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Restore YouTube OAuth token
+        env:
+          YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
+        run: printf '%s' "$YOUTUBE_TOKEN_JSON" > youtube_token.json
+
+      - name: Restore YouTube client secrets
+        env:
+          CLIENT_SECRETS_JSON: ${{ secrets.YOUTUBE_CLIENT_SECRETS_JSON }}
+        run: printf '%s' "$CLIENT_SECRETS_JSON" > client_secrets.json
+
+      - name: Pick topic
+        id: topic
+        env:
+          INPUT_TOPIC: ${{ github.event.inputs.topic }}
+        run: |
+          if [ -n "$INPUT_TOPIC" ]; then
+            echo "value=$INPUT_TOPIC" >> "$GITHUB_OUTPUT"
+          else
+            TOPICS=("知ると怖い日常の雑学" "意外と知らない歴史の裏話" "科学の面白い豆知識" "心理学のちょっとした話" "動物の驚くべき生態")
+            echo "value=${TOPICS[$RANDOM % ${#TOPICS[@]}]}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run pipeline
+        env:
+          TOPIC: ${{ steps.topic.outputs.value }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ELEVENLABS_VOICE_ID: ${{ secrets.ELEVENLABS_VOICE_ID }}
+          CREATOMATE_API_KEY: ${{ secrets.CREATOMATE_API_KEY }}
+          CREATOMATE_TEMPLATE_ID: ${{ secrets.CREATOMATE_TEMPLATE_ID }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          TIKTOK_ACCESS_TOKEN: ${{ secrets.TIKTOK_ACCESS_TOKEN }}
+          TIKTOK_DOMAIN_VERIFIED: ${{ secrets.TIKTOK_DOMAIN_VERIFIED }}
+          INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
+          INSTAGRAM_BUSINESS_ACCOUNT_ID: ${{ secrets.INSTAGRAM_BUSINESS_ACCOUNT_ID }}
+          X_API_KEY: ${{ secrets.X_API_KEY }}
+          X_API_SECRET: ${{ secrets.X_API_SECRET }}
+          X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
+          X_ACCESS_TOKEN_SECRET: ${{ secrets.X_ACCESS_TOKEN_SECRET }}
+        run: python main.py "$TOPIC"
