@@ -88,6 +88,7 @@ python main.py "知ると怖い日常の雑学"
 | `X_API_KEY` / `X_API_SECRET` / `X_ACCESS_TOKEN` / `X_ACCESS_TOKEN_SECRET` | 有料プラン契約後（任意） |
 | `PINTEREST_CLIENT_ID` / `PINTEREST_CLIENT_SECRET` / `PINTEREST_REFRESH_TOKEN` | Pinterest API OAuth（参考ボード画像取得用） |
 | `GH_PAT_SECRETS_WRITE` | Secrets書き込み権限を持つfine-grained PAT（Pinterestのrefresh_tokenローテーション書き戻し用） |
+| `GEMINI_API_KEY` | Google Gemini API（Nano Banana 2 / `gemini-3.1-flash-image`によるルックブック画像生成用） |
 
 ## ファイル構成
 
@@ -102,11 +103,13 @@ video-pipeline/
 ├── instagram_upload.py        # Instagram Graph API（審査完了後有効化）
 ├── x_upload.py                # X API v2（有料プラン契約後有効化）
 ├── pinterest_reference.py     # Pinterest非公開ボードから参考画像URLを取得（動作検証用）
+├── generate_looks.py           # Gemini API(Nano Banana 2)でルックブック画像を生成（動作検証用）
 ├── config.py                  # 設定
 ├── requirements.txt
 ├── .env.example
 ├── .github/workflows/daily_post.yml         # 日次cron
 ├── .github/workflows/test-pinterest-fetch.yml  # Pinterest取得の動作検証用（workflow_dispatchのみ）
+├── .github/workflows/test-generate-looks.yml   # ルックブック画像生成の動作検証用（workflow_dispatchのみ）
 └── api-applications/          # Instagram / TikTok API 申請資料
     ├── privacy-policy.md
     ├── tiktok-checklist.md
