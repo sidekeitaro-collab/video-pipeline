@@ -8,6 +8,7 @@ Pinterestの非公開ボードからピン画像URLを取得する。
 Secretsへ書き戻す。
 """
 import base64
+import json
 import os
 
 from nacl import encoding, public
@@ -160,6 +161,9 @@ def fetch_board_pin_images(access_token: str, board_id: str) -> list[str]:
                     f"media_type={media.get('media_type')!r} image_keys={list(images.keys())} "
                     f"media_keys={list(media.keys())}"
                 )
+                items = media.get("items")
+                if items:
+                    print(f"[Pinterest] DEBUG items[0] sample: {json.dumps(items[0])}")
 
         bookmark = body.get("bookmark")
         if not bookmark:
