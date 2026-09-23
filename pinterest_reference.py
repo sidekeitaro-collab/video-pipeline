@@ -8,7 +8,6 @@ Pinterestの非公開ボードからピン画像URLを取得する。
 Secretsへ書き戻す。
 """
 import base64
-import json
 import os
 
 from nacl import encoding, public
@@ -153,6 +152,15 @@ def fetch_board_pin_images(access_token: str, board_id: str) -> list[str]:
             media = pin.get("media", {})
             images = media.get("images", {})
             image = images.get("originals") or images.get("1200x")
+
+            if not image and media.get("media_type") == "multiple_images":
+                # "multiple_images"(Idea Pin/カルーセル)は画像がmedia.images直下ではなく
+                # media.items[]の各要素に個別のimages辞書として入っている。代表として
+                # 1枚目(items[0])の画像を採用する。
+                items = media.get("items") or []
+                if items:
+                    image = items[0].get("images", {}).get("1200x")
+
             if image and image.get("url"):
                 image_urls.append(image["url"])
             else:
@@ -161,9 +169,6 @@ def fetch_board_pin_images(access_token: str, board_id: str) -> list[str]:
                     f"media_type={media.get('media_type')!r} image_keys={list(images.keys())} "
                     f"media_keys={list(media.keys())}"
                 )
-                items = media.get("items")
-                if items:
-                    print(f"[Pinterest] DEBUG items[0] sample: {json.dumps(items[0])}")
 
         bookmark = body.get("bookmark")
         if not bookmark:
