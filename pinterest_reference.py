@@ -149,10 +149,17 @@ def fetch_board_pin_images(access_token: str, board_id: str) -> list[str]:
         body = resp.json()
 
         for pin in body.get("items", []):
-            images = pin.get("media", {}).get("images", {})
+            media = pin.get("media", {})
+            images = media.get("images", {})
             image = images.get("originals") or images.get("1200x")
             if image and image.get("url"):
                 image_urls.append(image["url"])
+            else:
+                print(
+                    f"[Pinterest] DEBUG skip pin {pin.get('id')}: "
+                    f"media_type={media.get('media_type')!r} image_keys={list(images.keys())} "
+                    f"media_keys={list(media.keys())}"
+                )
 
         bookmark = body.get("bookmark")
         if not bookmark:
