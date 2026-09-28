@@ -136,7 +136,12 @@ def generate_theme(api_key: str, history_path: str = "logs/theme-history.json") 
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_prompt}],
     )
-    text = response.content[0].text
+    # claude-sonnet-5はデフォルトでThinkingBlockを含むことがあり、content[0]が
+    # 必ずしもtextブロックとは限らない(実機検証で確認済み)。type=="text"のブロックを探す。
+    text_blocks = [block.text for block in response.content if block.type == "text"]
+    if not text_blocks:
+        raise RuntimeError(f"Claudeのレスポンスにtextブロックがありません: {response.content}")
+    text = "".join(text_blocks)
     content = _extract_json(text)
     _validate_theme(content)
 
