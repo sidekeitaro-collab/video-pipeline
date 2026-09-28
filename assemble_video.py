@@ -5,8 +5,8 @@ ffmpegで7ルック画像を1本の9:16縦型動画に組み立てる(Creatomate
 各画像にPillowでテキストオーバーレイ(商品名+LOOK表記)を焼き込んだ上で、ffmpegのconcat
 demuxerで0.9秒ずつハードカットで連結する。BGMは任意(未設定なら無音の動画のみ出力)。
 
-GitHub Actions(ubuntu-latest)にはffmpegが標準搭載済み。日本語フォントは
-`apt-get install -y fonts-noto-cjk`で導入する前提(ワークフロー側で実施)。
+ffmpegと日本語フォントは`apt-get install -y ffmpeg fonts-noto-cjk`で導入する前提
+(ワークフロー側で実施。ubuntu-latestランナーにffmpegは標準搭載されていない)。
 
 動作検証用(test-assemble-video.yml)からのみ実行する想定。
 """
