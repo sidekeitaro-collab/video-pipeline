@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: "0 12 * * *"  # 毎日 21:00 JST (UTC+9)
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "true にすると生成のみ行い、git push・投稿はスキップする"
+        type: boolean
+        default: false
 
 permissions:
   contents: write  # main.pyがpublic/videos/配下の動画とlogs/theme-history.jsonをpushする
@@ -49,4 +54,11 @@ jobs:
           X_API_SECRET: ${{ secrets.X_API_SECRET }}
           X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
           X_ACCESS_TOKEN_SECRET: ${{ secrets.X_ACCESS_TOKEN_SECRET }}
-        run: python main.py
+        run: python main.py ${{ (github.event.inputs.dry_run == 'true') && '--dry-run' || '' }}
+
+      - name: Upload dry-run video for inspection
+        if: ${{ github.event.inputs.dry_run == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: dry-run-video
+          path: output/*.mp4
