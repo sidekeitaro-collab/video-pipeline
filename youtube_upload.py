@@ -4,7 +4,10 @@ from googleapiclient.http import MediaFileUpload
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
-from config import YOUTUBE_CLIENT_SECRETS
+
+# config.py経由にすると他フロー用の環境変数(CREATOMATE_API_KEY等)まで無条件に
+# requireされてしまうため、ここでは直接環境変数を読む。
+YOUTUBE_CLIENT_SECRETS = os.getenv("YOUTUBE_CLIENT_SECRETS", "client_secrets.json")
 
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
 TOKEN_FILE = "youtube_token.json"

@@ -4,7 +4,9 @@ __pycache__/
 *.mp4
 *.mp3
 !assets/bgm/*.mp3
+!public/videos/*.mp4
 output/
+generated/daily/
 client_secrets.json
 youtube_token.json
 youtube_token.pickle

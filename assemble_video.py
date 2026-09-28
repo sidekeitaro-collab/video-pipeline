@@ -146,6 +146,32 @@ def build_video(look_frame_paths: list[str], bgm_path: str | None, output_path: 
     return output_path
 
 
+def assemble(theme: dict, look_image_paths: list[str], bgm_path: str | None, output_path: str) -> str:
+    """theme_gen.generate_theme()が返すtheme dict(looks[i]["product_name_ja"])と、
+    generate_looks.generate_all_looks()が返すlook画像パスの配列から、テキスト
+    オーバーレイ付きの9:16動画を1本組み立てる。完成したmp4のパスを返す。"""
+    looks = theme["looks"]
+    if len(look_image_paths) != len(looks):
+        raise RuntimeError(
+            f"look画像の枚数({len(look_image_paths)})とtheme['looks']の件数({len(looks)})が"
+            "一致しません。"
+        )
+
+    font_path = _resolve_font_path()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        frame_paths = []
+        for i, (image_path, look) in enumerate(zip(look_image_paths, looks), start=1):
+            dst = os.path.join(tmpdir, f"frame_{i:02d}.png")
+            render_look_with_text(
+                image_path, look["product_name_ja"], f"LOOK {i:02d}", font_path, dst
+            )
+            frame_paths.append(dst)
+            print(f"[Pillow] Rendered text overlay: look {i}/{len(looks)}")
+
+        return build_video(frame_paths, bgm_path, output_path)
+
+
 def main() -> None:
     font_path = _resolve_font_path()
 

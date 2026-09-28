@@ -1,114 +1,150 @@
 #!/usr/bin/env python3
 """
-Short video auto-pipeline:
-  Claude (script) → Creatomate (ElevenLabs voiceover + captions + Pexels background) → YouTube / TikTok / Instagram / X
+Daily fashion lookbook video pipeline orchestrator:
+
+  theme_gen (Claude: 本日のテーマ+7ルック分の服装差分)
+    → generate_looks (Gemini: ベース画像+7ルック画像)
+    → assemble_video (ffmpeg+Pillow: 9:16動画に合成)
+    → public/videos/YYYY-MM-DD.mp4 としてリポジトリにcommit・push
+    → YouTube Shorts へアップロード
+
+TikTok/Instagram/Xは審査待ちでSecrets未設定のため、今回はまだ組み込まない
+(Secretsが揃い次第、YouTubeと同様のスキップ可能なステップとして追加する想定)。
 """
 import argparse
 import os
-import tempfile
+import subprocess
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
-from prompt_gen import generate_video_content
-from creatomate_render import fetch_background_video, create_render, wait_for_render, download_video
-from youtube_upload import upload_to_youtube
-from config import (
-    TIKTOK_ACCESS_TOKEN,
-    TIKTOK_DOMAIN_VERIFIED,
-    INSTAGRAM_ACCESS_TOKEN,
-    INSTAGRAM_BUSINESS_ACCOUNT_ID,
-    X_API_KEY,
-    X_API_SECRET,
-    X_ACCESS_TOKEN,
-    X_ACCESS_TOKEN_SECRET,
-)
+from theme_gen import generate_theme
+from generate_looks import generate_all_looks
+from assemble_video import assemble
+
+REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+GENERATED_ROOT = os.path.join(REPO_ROOT, "generated", "daily")
+OUTPUT_DIR = os.path.join(REPO_ROOT, "output")
+PUBLIC_VIDEOS_DIR = os.path.join(REPO_ROOT, "public", "videos")
+BGM_PATH = os.path.join(REPO_ROOT, "assets", "bgm", "chill-lofi.mp3")
+HISTORY_PATH = os.path.join(REPO_ROOT, "logs", "theme-history.json")
+
+GITHUB_REPO = "sidekeitaro-collab/video-pipeline"
+JST = ZoneInfo("Asia/Tokyo")
 
 
-def run(topic: str, dry_run: bool = False):
-    print(f"\n=== PIPELINE START: {topic} ===\n")
+def _require_env(name: str) -> str:
+    value = os.getenv(name)
+    if not value:
+        raise RuntimeError(
+            f"必須の環境変数 '{name}' が設定されていません。GitHub Secretsを確認してください。"
+        )
+    return value
 
-    # Step 1: 台本・メタデータ生成
-    print("[1/5] Generating script via Claude...")
-    content = generate_video_content(topic)
-    print(f"  Title: {content['title']}")
+
+def _run_git(*args: str) -> None:
+    result = subprocess.run(["git", *args], cwd=REPO_ROOT, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"git {' '.join(args)} failed: {result.stderr}")
+
+
+def _ensure_git_identity() -> None:
+    """コミット用のgit identityが未設定(CIランナーのデフォルト状態)なら、
+    このリポジトリ限定(--globalではない)で設定する。"""
+    for key, value in (
+        ("user.name", "video-pipeline-bot"),
+        ("user.email", "video-pipeline-bot@users.noreply.github.com"),
+    ):
+        current = subprocess.run(
+            ["git", "config", key], cwd=REPO_ROOT, capture_output=True, text=True
+        )
+        if not current.stdout.strip():
+            _run_git("config", key, value)
+
+
+def publish_video(video_path: str, date_str: str, item_theme: str) -> str:
+    """完成動画をpublic/videos/YYYY-MM-DD.mp4としてコミット・pushし、rawのURLを返す。"""
+    os.makedirs(PUBLIC_VIDEOS_DIR, exist_ok=True)
+    public_path = os.path.join(PUBLIC_VIDEOS_DIR, f"{date_str}.mp4")
+    with open(video_path, "rb") as src, open(public_path, "wb") as dst:
+        dst.write(src.read())
+
+    _ensure_git_identity()
+    # 重複回避に使うテーマ履歴も、CIランナーが毎回使い捨てのため同じコミットで書き戻す。
+    _run_git("add", public_path, HISTORY_PATH)
+    _run_git("commit", "-m", f"Daily video: {item_theme} ({date_str})")
+    _run_git("push")
+
+    return f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/public/videos/{date_str}.mp4"
+
+
+def _youtube_credentials_available() -> bool:
+    client_secrets = os.getenv("YOUTUBE_CLIENT_SECRETS", "client_secrets.json")
+    token_file = "youtube_token.json"
+    return (
+        os.path.exists(client_secrets) and os.path.getsize(client_secrets) > 0
+        and os.path.exists(token_file) and os.path.getsize(token_file) > 0
+    )
+
+
+def upload_to_youtube_shorts(video_path: str, item_theme: str) -> None:
+    title = f"本日のコーデ紹介【{item_theme}】"
+    description = f"今日のテーマは「{item_theme}」。7パターンのコーディネートをご紹介します。"
+    tags = ["ファッション", "コーデ", "メンズファッション", item_theme]
+
+    from youtube_upload import upload_to_youtube
+
+    video_id = upload_to_youtube(
+        video_path=video_path, title=title, description=description, tags=tags
+    )
+    print(f"  [YouTube] https://youtube.com/shorts/{video_id}")
+
+
+def run(dry_run: bool = False) -> None:
+    date_str = datetime.now(JST).strftime("%Y-%m-%d")
+
+    print(f"\n=== DAILY VIDEO PIPELINE START: {date_str} ===\n")
+
+    print("[1/4] Generating today's theme (Claude)...")
+    anthropic_api_key = _require_env("ANTHROPIC_API_KEY")
+    theme = generate_theme(anthropic_api_key, history_path=HISTORY_PATH)
+    print(f"  Theme: {theme['item_theme']}")
+
+    print("[2/4] Generating look images (Gemini)...")
+    gemini_api_key = _require_env("GEMINI_API_KEY")
+    output_dir = os.path.join(GENERATED_ROOT, date_str)
+    base_path, look_paths = generate_all_looks(gemini_api_key, theme, output_dir)
+    print(f"  Generated {len(look_paths)} looks (base: {base_path})")
+
+    print("[3/4] Assembling video (ffmpeg)...")
+    bgm_path = BGM_PATH if os.path.exists(BGM_PATH) else None
+    video_path = os.path.join(OUTPUT_DIR, f"{date_str}.mp4")
+    assemble(theme, look_paths, bgm_path, video_path)
+    print(f"  Assembled: {video_path}")
 
     if dry_run:
-        print("\n[DRY RUN] Skipping render and upload.")
-        print(f"  Content:\n{content}")
+        print("\n[DRY RUN] Skipping publish (git push) and upload.")
+        print(f"\n=== DONE (dry-run): {date_str} ===\n")
         return
 
-    # Step 2: 背景素材検索 (Pexels)
-    print("[2/5] Fetching background footage...")
-    background_url = fetch_background_video(content["background_query"])
+    print("[4/4] Publishing & uploading...")
+    video_url = publish_video(video_path, date_str, theme["item_theme"])
+    print(f"  Published: {video_url}")
 
-    # Step 3: Creatomateでレンダリング (ElevenLabsナレーション + 字幕自動同期)
-    print("[3/5] Rendering video (Creatomate)...")
-    render_id = create_render(content["title"], content["script"], background_url)
-    video_url = wait_for_render(render_id)
+    # YouTubeはフラッグシップ媒体のため、失敗したら例外をそのまま伝播させて
+    # ワークフローを失敗として可視化する(黙って握りつぶさない)。
+    if _youtube_credentials_available():
+        upload_to_youtube_shorts(video_path, theme["item_theme"])
+    else:
+        print("  [YouTube] SKIP (認証情報未設定)")
 
-    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
-        tmp_path = tmp.name
-
-    results = {}
-    try:
-        download_video(video_url, tmp_path)
-
-        # Step 4: YouTube Shorts へアップロード（失敗したら全体を止める＝フラッグシップ媒体）
-        print("[4/5] Uploading to YouTube Shorts...")
-        video_id = upload_to_youtube(
-            video_path=tmp_path,
-            title=content["title"],
-            description=content["description"],
-            tags=content["tags"],
-        )
-        results["youtube"] = f"https://youtube.com/shorts/{video_id}"
-        print(f"  {results['youtube']}")
-
-        # Step 5: 他媒体へ投稿（資格情報が揃っている場合のみ。1媒体の失敗が他に波及しないようtry/except）
-        print("[5/5] Posting to other platforms (if configured)...")
-
-        if TIKTOK_ACCESS_TOKEN and TIKTOK_DOMAIN_VERIFIED:
-            try:
-                from tiktok_upload import upload_to_tiktok
-                results["tiktok"] = upload_to_tiktok(video_url, content["title"])
-            except Exception as e:
-                results["tiktok"] = f"FAILED: {e}"
-                print(f"  [TikTok] ERROR: {e}")
-        elif TIKTOK_ACCESS_TOKEN and not TIKTOK_DOMAIN_VERIFIED:
-            print("  [TikTok] SKIP (TIKTOK_DOMAIN_VERIFIED未設定 — PULL_FROM_URL用ドメイン検証が先)")
-        else:
-            print("  [TikTok] SKIP (TIKTOK_ACCESS_TOKEN 未設定 — API審査待ち)")
-
-        if INSTAGRAM_ACCESS_TOKEN and INSTAGRAM_BUSINESS_ACCOUNT_ID:
-            try:
-                from instagram_upload import upload_to_instagram
-                results["instagram"] = upload_to_instagram(video_url, content["description"])
-            except Exception as e:
-                results["instagram"] = f"FAILED: {e}"
-                print(f"  [Instagram] ERROR: {e}")
-        else:
-            print("  [Instagram] SKIP (INSTAGRAM_ACCESS_TOKEN 未設定 — API審査待ち)")
-
-        if X_API_KEY and X_API_SECRET and X_ACCESS_TOKEN and X_ACCESS_TOKEN_SECRET:
-            try:
-                from x_upload import upload_to_x
-                results["x"] = upload_to_x(tmp_path, content["title"], content["description"])
-            except Exception as e:
-                results["x"] = f"FAILED: {e}"
-                print(f"  [X] ERROR: {e}")
-        else:
-            print("  [X] SKIP (X_API_KEY等 未設定 — 有料APIプラン未契約)")
-
-        print(f"\n=== DONE: {topic} ===")
-        for platform, result in results.items():
-            print(f"  {platform}: {result}")
-        print()
-    finally:
-        os.unlink(tmp_path)
+    print(f"\n=== DONE: {date_str} ===\n")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Short video auto-pipeline")
-    parser.add_argument("topic", help="動画のテーマ (例: '東京の夜景')")
-    parser.add_argument("--dry-run", action="store_true", help="動画生成・投稿をスキップして確認のみ")
+    parser = argparse.ArgumentParser(description="Daily fashion lookbook video pipeline")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="動画生成のみ行い、git push・投稿はスキップ"
+    )
     args = parser.parse_args()
 
-    run(args.topic, dry_run=args.dry_run)
+    run(dry_run=args.dry_run)

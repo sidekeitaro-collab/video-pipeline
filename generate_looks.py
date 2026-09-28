@@ -27,38 +27,43 @@ BASE_CHARACTER_PROMPT = (
     "no logo, vertical portrait composition --ar 9:16"
 )
 
-LOOK_PROMPTS = [
+# ベース画像には服装の記述が一切無い(キャラ/背景/構図のみ)ため、アイテムテーマは
+# ここではなく各ルックのプロンプト(LOOK_PROMPT_TEMPLATE)側にのみ差し込まれる。
+LOOK_PROMPT_TEMPLATE = (
+    "same model, same face, same pose, same light blue background (#C5E1F5), "
+    "wearing {prompt_fragment}, no text, no watermark, no logo --ar 9:16"
+)
+
+
+def build_look_prompt(prompt_fragment: str) -> str:
+    """theme_gen.generate_theme()のlooks[i]["prompt_fragment"]を、キャラ/背景/技術指定
+    込みの完全なルック生成プロンプトに差し込む。"""
+    return LOOK_PROMPT_TEMPLATE.format(prompt_fragment=prompt_fragment)
+
+
+# main()単体実行(CLIでの動作確認)用の固定テーマ。プロンプト文言自体は元の
+# LOOK_PROMPTSと同一(build_look_promptに通した結果が同じ文字列になる)。
+_TEST_LOOK_FRAGMENTS = [
     # LOOK 01 — ネイビー×ベージュ
-    "same model, same face, same pose, same light blue background (#C5E1F5), "
-    "wearing a navy crew-neck knit sweater, beige wide-leg trousers, "
-    "white low-top sneakers, no text, no watermark, no logo --ar 9:16",
+    "a navy crew-neck knit sweater, beige wide-leg trousers, white low-top sneakers",
     # LOOK 02 — グレー×ブラック
-    "same model, same face, same pose, same light blue background (#C5E1F5), "
-    "wearing a heather gray crew-neck knit sweater, black tapered slacks, "
-    "black leather loafers, no text, no watermark, no logo --ar 9:16",
+    "a heather gray crew-neck knit sweater, black tapered slacks, black leather loafers",
     # LOOK 03 — オフホワイト×シャツ襟出し
-    "same model, same face, same pose, same light blue background (#C5E1F5), "
-    "wearing an off-white crew-neck knit sweater layered over a light blue "
-    "collared shirt (collar visible), khaki chino pants, brown leather boots, "
-    "no text, no watermark, no logo --ar 9:16",
+    "an off-white crew-neck knit sweater layered over a light blue collared shirt "
+    "(collar visible), khaki chino pants, brown leather boots",
     # LOOK 04 — マスタード×デニム
-    "same model, same face, same pose, same light blue background (#C5E1F5), "
-    "wearing a mustard yellow crew-neck knit sweater, black straight denim jeans, "
-    "white canvas sneakers, no text, no watermark, no logo --ar 9:16",
+    "a mustard yellow crew-neck knit sweater, black straight denim jeans, white canvas sneakers",
     # LOOK 05 — ブラック×キャップ
-    "same model, same face, same pose, same light blue background (#C5E1F5), "
-    "wearing a black crew-neck knit sweater, gray jogger pants, black cap, "
-    "black chunky sneakers, no text, no watermark, no logo --ar 9:16",
+    "a black crew-neck knit sweater, gray jogger pants, black cap, black chunky sneakers",
     # LOOK 06 — ボルドー×眼鏡
-    "same model, same face, same pose, same light blue background (#C5E1F5), "
-    "wearing a burgundy crew-neck knit sweater, beige chino pants, round "
-    "tortoiseshell glasses, brown loafers, no text, no watermark, no logo --ar 9:16",
+    "a burgundy crew-neck knit sweater, beige chino pants, round tortoiseshell glasses, "
+    "brown loafers",
     # LOOK 07 — グリーン×マフラー
-    "same model, same face, same pose, same light blue background (#C5E1F5), "
-    "wearing an olive green crew-neck knit sweater, black wide-leg trousers, "
-    "a cream knit scarf draped loosely, black ankle boots, no text, no watermark, "
-    "no logo --ar 9:16",
+    "an olive green crew-neck knit sweater, black wide-leg trousers, a cream knit scarf "
+    "draped loosely, black ankle boots",
 ]
+
+LOOK_PROMPTS = [build_look_prompt(fragment) for fragment in _TEST_LOOK_FRAGMENTS]
 
 
 def _require_env(name: str) -> str:
@@ -98,6 +103,45 @@ def save_image(image_bytes: bytes, path: str) -> None:
     with open(path, "wb") as f:
         f.write(image_bytes)
     print(f"[Gemini] Saved: {path}")
+
+
+def generate_all_looks(api_key: str, theme: dict, output_dir: str) -> tuple[str, list[str]]:
+    """theme_gen.generate_theme()が返すtheme dictから、ベース画像1枚+7ルック画像を
+    生成しoutput_dirに保存する。(ベース画像パス, 7ルック画像パスのリスト) を返す。
+
+    動画組み立て(assemble_video)にはルックが全て揃っている必要があるため、main()と
+    異なり1ルックでも生成に失敗したら例外を送出する(ベスト・エフォートで進めない)。
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    print(f"[Gemini] Generating base character image (model: {MODEL_ID})...")
+    base_image_bytes = generate_base_character(api_key)
+    base_path = os.path.join(output_dir, "base.png")
+    save_image(base_image_bytes, base_path)
+
+    looks = theme["looks"]
+    look_paths = []
+    failed_looks = []
+
+    for i, look in enumerate(looks, start=1):
+        print(f"[Gemini] Generating look {i}/{len(looks)}: {look['product_name_ja']}...")
+        look_prompt = build_look_prompt(look["prompt_fragment"])
+        try:
+            look_bytes = generate_look_variant(api_key, base_image_bytes, look_prompt)
+            look_path = os.path.join(output_dir, f"look_{i:02d}.png")
+            save_image(look_bytes, look_path)
+            look_paths.append(look_path)
+        except Exception as exc:
+            print(f"[Gemini] ERROR: look {i:02d} の生成に失敗しました: {exc}")
+            failed_looks.append(i)
+
+    if failed_looks:
+        raise RuntimeError(
+            f"look画像の生成に失敗しました(look番号: {failed_looks})。"
+            f"動画組み立てには{len(looks)}枚全てが必要です。"
+        )
+
+    return base_path, look_paths
 
 
 def main() -> None:
