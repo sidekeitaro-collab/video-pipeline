@@ -1,27 +1,34 @@
 #!/usr/bin/env python3
 """
-Creatomateの RenderScript (JSON) を使って、7ルック画像を1本の9:16縦型動画に組み立てる。
+ffmpegで7ルック画像を1本の9:16縦型動画に組み立てる(Creatomate不使用、外部APIコストゼロ)。
 
-Web UIのテンプレート機能は使わず、動画構成を丸ごとJSONで組み立ててAPIに直接渡す方式
-(creatomate.com/docs/api/render-script/json-structure)。Kling時代のcreatomate_render.py
-(template_id + ElevenLabsナレーション前提)とは独立した新規実装。config.pyはこのフローで
-不要な環境変数(ELEVENLABS_VOICE_ID等)を無条件でrequireする設計のためimportしない。
+各画像にPillowでテキストオーバーレイ(商品名+LOOK表記)を焼き込んだ上で、ffmpegのconcat
+demuxerで0.9秒ずつハードカットで連結する。BGMは任意(未設定なら無音の動画のみ出力)。
+
+GitHub Actions(ubuntu-latest)にはffmpegが標準搭載済み。日本語フォントは
+`apt-get install -y fonts-noto-cjk`で導入する前提(ワークフロー側で実施)。
 
 動作検証用(test-assemble-video.yml)からのみ実行する想定。
 """
 import os
-import time
+import subprocess
+import tempfile
 
-from retry_utils import request_with_retry
+from PIL import Image, ImageDraw, ImageFont
 
-CREATOMATE_API_BASE = "https://api.creatomate.com/v2"
-REPO_RAW_BASE = (
-    "https://raw.githubusercontent.com/sidekeitaro-collab/video-pipeline/main/generated/crewneck_knit"
-)
+REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+IMAGES_DIR = os.path.join(REPO_ROOT, "generated", "crewneck_knit")
 
 OUTPUT_WIDTH = 1080
 OUTPUT_HEIGHT = 1920
 IMAGE_DURATION = 0.9  # 秒/ルック、ハードカット(トランジションなし)
+
+# GitHub Actions(ubuntu-latest)で `apt-get install -y fonts-noto-cjk` 後に存在するパス。
+# ローカル(macOS)で検証する場合はヒラギノ角ゴ等、存在するCJK対応フォントを指定すること。
+FONT_PATH_CANDIDATES = [
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+]
 
 # prompts/look_crewneck_knit.md の「動画組み立て側で使うテキスト」表に対応
 LOOK_LABELS = [
@@ -35,158 +42,126 @@ LOOK_LABELS = [
 ]
 
 
-def _require_env(name: str) -> str:
-    value = os.getenv(name)
-    if not value:
-        raise RuntimeError(
-            f"必須の環境変数 '{name}' が設定されていません。.env またはGitHub Secretsを確認してください。"
-        )
-    return value
-
-
-def _creatomate_headers() -> dict:
-    return {
-        "Authorization": f"Bearer {_require_env('CREATOMATE_API_KEY')}",
-        "Content-Type": "application/json",
-    }
-
-
-def build_render_script(
-    look_urls: list[str], labels: list[tuple[str, str]], bgm_url: str | None
-) -> dict:
-    """7枚のlook画像+テキストオーバーレイ(+任意でBGM)を並べたRenderScript JSONを組み立てる。
-
-    画像はtrack 1、テキストはtrack 2(track番号が大きいほど手前に描画される)に配置し、
-    各要素のtime/durationを明示することでハードカットのタイミングを厳密に揃える。
-    """
-    if len(look_urls) != len(labels):
-        raise ValueError(f"look_urls({len(look_urls)})とlabels({len(labels)})の件数が一致しません。")
-
-    elements = []
-    for i, (image_url, (product_name, look_tag)) in enumerate(zip(look_urls, labels)):
-        start = round(i * IMAGE_DURATION, 3)
-
-        elements.append(
-            {
-                "type": "image",
-                "track": 1,
-                "time": start,
-                "duration": IMAGE_DURATION,
-                "source": image_url,
-                "fit": "cover",
-                "width": "100%",
-                "height": "100%",
-            }
-        )
-        elements.append(
-            {
-                "type": "text",
-                "track": 2,
-                "time": start,
-                "duration": IMAGE_DURATION,
-                "text": f"{product_name}\n{look_tag}",
-                "font_family": "Noto Sans JP",
-                "font_weight": 500,
-                "font_size": "5.5vmin",
-                "fill_color": "#ffffff",
-                "width": "90%",
-                "x_alignment": "50%",
-                "y_alignment": "100%",
-                "y": "88%",
-                "shadow_color": "rgba(0,0,0,0.6)",
-                "shadow_blur": "1vmin",
-                "shadow_x": "0.2vmin",
-                "shadow_y": "0.2vmin",
-            }
-        )
-
-    total_duration = round(len(look_urls) * IMAGE_DURATION, 3)
-
-    if bgm_url:
-        elements.append(
-            {
-                "type": "audio",
-                "track": 3,
-                "time": 0,
-                "source": bgm_url,
-                "duration": total_duration,
-                "trim_start": 0,
-                "trim_duration": total_duration,
-                "volume": "70%",
-            }
-        )
-
-    return {
-        "output_format": "mp4",
-        "width": OUTPUT_WIDTH,
-        "height": OUTPUT_HEIGHT,
-        "duration": total_duration,
-        "elements": elements,
-    }
-
-
-def create_render(render_script: dict) -> str:
-    resp = request_with_retry(
-        "POST", f"{CREATOMATE_API_BASE}/renders", headers=_creatomate_headers(), json=render_script, timeout=30
+def _resolve_font_path() -> str:
+    for path in FONT_PATH_CANDIDATES:
+        if os.path.exists(path):
+            return path
+    raise RuntimeError(
+        "日本語対応フォントが見つかりません。GitHub Actions上では"
+        "`apt-get install -y fonts-noto-cjk`を先に実行してください。"
+        f"(探索したパス: {FONT_PATH_CANDIDATES})"
     )
-    resp.raise_for_status()
-    body = resp.json()
-
-    # /v2/renders は単一リクエストでもレンダー配列(1件)を返す
-    render = body[0] if isinstance(body, list) else body
-    if "id" not in render:
-        raise RuntimeError(f"Creatomateのレスポンス形式が想定と異なります: {body}")
-
-    print(f"[Creatomate] Render created: {render['id']} (status: {render.get('status')})")
-    return render["id"]
 
 
-def wait_for_render(render_id: str, poll_interval: int = 5, timeout: int = 300) -> str:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        resp = request_with_retry(
-            "GET", f"{CREATOMATE_API_BASE}/renders/{render_id}", headers=_creatomate_headers(), timeout=15
-        )
-        resp.raise_for_status()
-        render = resp.json()
-        status = render.get("status")
-        print(f"[Creatomate] Status: {status}")
-
-        if status == "succeeded":
-            url = render.get("url")
-            if not url:
-                raise RuntimeError(f"Creatomateがsucceededを返しましたがurlがありません: {render}")
-            return url
-        elif status == "failed":
-            raise RuntimeError(f"Creatomate render failed: {render.get('error_message')}")
-
-        time.sleep(poll_interval)
-
-    raise TimeoutError(f"Creatomate render {render_id} did not complete within {timeout}s")
+def _run_ffmpeg(args: list[str]) -> None:
+    result = subprocess.run(
+        ["ffmpeg", "-y", "-loglevel", "error", *args],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg failed: {result.stderr}")
 
 
-def download_video(url: str, path: str) -> str:
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    resp = request_with_retry("GET", url, stream=True, timeout=120)
-    resp.raise_for_status()
-    with open(path, "wb") as f:
-        for chunk in resp.iter_content(chunk_size=8192):
-            f.write(chunk)
-    print(f"[Creatomate] Downloaded: {path}")
-    return path
+def render_look_with_text(
+    image_path: str, product_name: str, look_tag: str, font_path: str, output_path: str
+) -> None:
+    """画像を9:16キャンバスにcover配置し、下部中央にテキスト(白文字+影)を焼き込む。"""
+    img = Image.open(image_path).convert("RGB")
+
+    # cover配置: 9:16キャンバスを埋めるようリサイズ+中央クロップ
+    canvas_ratio = OUTPUT_WIDTH / OUTPUT_HEIGHT
+    img_ratio = img.width / img.height
+    if img_ratio > canvas_ratio:
+        new_height = OUTPUT_HEIGHT
+        new_width = int(new_height * img_ratio)
+    else:
+        new_width = OUTPUT_WIDTH
+        new_height = int(new_width / img_ratio)
+    img = img.resize((new_width, new_height), Image.LANCZOS)
+    left = (new_width - OUTPUT_WIDTH) // 2
+    top = (new_height - OUTPUT_HEIGHT) // 2
+    img = img.crop((left, top, left + OUTPUT_WIDTH, top + OUTPUT_HEIGHT))
+
+    draw = ImageDraw.Draw(img)
+    font_main = ImageFont.truetype(font_path, size=int(OUTPUT_HEIGHT * 0.038))
+    font_tag = ImageFont.truetype(font_path, size=int(OUTPUT_HEIGHT * 0.030))
+
+    def draw_centered_with_shadow(text: str, y: int, font: ImageFont.FreeTypeFont) -> None:
+        bbox = draw.textbbox((0, 0), text, font=font)
+        text_w = bbox[2] - bbox[0]
+        x = (OUTPUT_WIDTH - text_w) // 2
+        shadow_offset = max(1, int(OUTPUT_HEIGHT * 0.0015))
+        draw.text((x + shadow_offset, y + shadow_offset), text, font=font, fill=(0, 0, 0, 160))
+        draw.text((x, y), text, font=font, fill=(255, 255, 255))
+
+    base_y = int(OUTPUT_HEIGHT * 0.86)
+    draw_centered_with_shadow(product_name, base_y, font_main)
+    draw_centered_with_shadow(look_tag, base_y + int(OUTPUT_HEIGHT * 0.045), font_tag)
+
+    img.save(output_path)
+
+
+def build_video(look_frame_paths: list[str], bgm_path: str | None, output_path: str) -> str:
+    """concat demuxerで画像を連結し、任意でBGMを合成してmp4を出力する。"""
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        concat_list_path = os.path.join(tmpdir, "concat_list.txt")
+        with open(concat_list_path, "w") as f:
+            for frame_path in look_frame_paths:
+                f.write(f"file '{frame_path}'\nduration {IMAGE_DURATION}\n")
+            # concat demuxerの仕様上、最後のdurationは無視されるため最終フレームをもう一度書く
+            f.write(f"file '{look_frame_paths[-1]}'\n")
+
+        total_duration = round(len(look_frame_paths) * IMAGE_DURATION, 3)
+        video_args = ["-f", "concat", "-safe", "0", "-i", concat_list_path]
+
+        if bgm_path:
+            video_args += [
+                "-i", bgm_path,
+                "-filter:a", "volume=0.7",
+                "-t", str(total_duration),
+                "-c:a", "aac",
+                "-shortest",
+            ]
+
+        video_args += [
+            # IMAGE_DURATION(0.9秒)はデフォルトの25fpsだと22.5フレームという非整数値になり、
+            # concat demuxerの各セグメント境界でフレームがずれる(実機検証で確認済み: 全ルックが
+            # 1つ後ろにずれて表示される)。30fpsなら0.9秒=27.0フレームと割り切れるため明示指定する。
+            "-r", "30",
+            # concat demuxerの「最終行を duration 無しでもう一度書く」お作法(最後のdurationが
+            # 無視される仕様への対処)と-rの組み合わせで、末尾が想定より長く伸びる場合がある
+            # (実機検証で確認済み)。-tで合計尺を明示的に打ち切ることで安全側に倒す。
+            "-t", str(total_duration),
+            "-vf", f"scale={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}",
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            output_path,
+        ]
+        _run_ffmpeg(video_args)
+
+    print(f"[ffmpeg] Saved: {output_path}")
+    return output_path
 
 
 def main() -> None:
-    look_urls = [f"{REPO_RAW_BASE}/look_{i:02d}.png" for i in range(1, 8)]
+    font_path = _resolve_font_path()
 
-    # BGMのURLはここ1箇所にまとめる。著作権フリー音源の選定自体は別タスク。
-    # 未設定(None)の場合は音声無しで動画を生成する(エラーにしない)。
-    bgm_url = None
+    with tempfile.TemporaryDirectory() as tmpdir:
+        frame_paths = []
+        for i, (product_name, look_tag) in enumerate(LOOK_LABELS, start=1):
+            src = os.path.join(IMAGES_DIR, f"look_{i:02d}.png")
+            dst = os.path.join(tmpdir, f"frame_{i:02d}.png")
+            render_look_with_text(src, product_name, look_tag, font_path, dst)
+            frame_paths.append(dst)
+            print(f"[Pillow] Rendered text overlay: look {i}/{len(LOOK_LABELS)}")
 
-    render_script = build_render_script(look_urls, LOOK_LABELS, bgm_url)
-    render_id = create_render(render_script)
-    video_url = wait_for_render(render_id)
-    download_video(video_url, "./output/assembled_video.mp4")
+        # BGMのパスはここ1箇所にまとめる。未設定(None)なら無音の動画を出力する。
+        bgm_path = None
+
+        build_video(frame_paths, bgm_path, os.path.join(REPO_ROOT, "output", "assembled_video.mp4"))
 
 
 if __name__ == "__main__":
