@@ -149,8 +149,13 @@ def build_video(look_frame_paths: list[str], bgm_path: str | None, output_path: 
             # 無視される仕様への対処)と-rの組み合わせで、末尾が想定より長く伸びる場合がある
             # (実機検証で確認済み)。-tで合計尺を明示的に打ち切ることで安全側に倒す。
             "-t", str(total_duration),
-            "-vf", f"scale={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}",
+            "-vf", f"scale={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:flags=lanczos",
             "-c:v", "libx264",
+            # ほぼ静止画の連続(0.9秒ごとのハードカット)なのでCRFを下げても
+            # ファイルサイズはほとんど増えない。デフォルト(CRF23相当)より
+            # 高画質寄りに振る(数値が小さいほど高画質)。
+            "-crf", "18",
+            "-preset", "slow",
             "-pix_fmt", "yuv420p",
             output_path,
         ]
