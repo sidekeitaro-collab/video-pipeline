@@ -84,8 +84,22 @@ def render_look_with_text(
     img = img.crop((left, top, left + OUTPUT_WIDTH, top + OUTPUT_HEIGHT))
 
     draw = ImageDraw.Draw(img)
-    font_main = ImageFont.truetype(font_path, size=int(OUTPUT_HEIGHT * 0.038))
-    font_tag = ImageFont.truetype(font_path, size=int(OUTPUT_HEIGHT * 0.030))
+    max_text_width = int(OUTPUT_WIDTH * 0.92)  # 左右に少し余白を残す
+
+    def _fit_font(text: str, start_size: int, min_size: int) -> ImageFont.FreeTypeFont:
+        """textがmax_text_widthに収まるまでフォントサイズを縮める(長い商品名が
+        画面からはみ出すのを防ぐため、実機検証で発覚した不具合への対処)。"""
+        size = start_size
+        while size > min_size:
+            font = ImageFont.truetype(font_path, size=size)
+            bbox = draw.textbbox((0, 0), text, font=font)
+            if bbox[2] - bbox[0] <= max_text_width:
+                return font
+            size -= 2
+        return ImageFont.truetype(font_path, size=min_size)
+
+    font_main = _fit_font(product_name, int(OUTPUT_HEIGHT * 0.038), int(OUTPUT_HEIGHT * 0.020))
+    font_tag = _fit_font(look_tag, int(OUTPUT_HEIGHT * 0.030), int(OUTPUT_HEIGHT * 0.018))
 
     def draw_centered_with_shadow(text: str, y: int, font: ImageFont.FreeTypeFont) -> None:
         bbox = draw.textbbox((0, 0), text, font=font)
