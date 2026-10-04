@@ -6,13 +6,17 @@ Daily fashion lookbook video pipeline orchestrator:
     → generate_looks (Gemini: ベース画像+7ルック画像)
     → assemble_video (ffmpeg+Pillow: 9:16動画に合成)
     → public/videos/YYYY-MM-DD.mp4 としてリポジトリにcommit・push
-    → YouTube Shorts へアップロード
+    → YouTube Shorts へアップロード(本日分)
+    → 未投稿バックログがあれば、最も古い1本も合わせてYouTubeへアップロード
+      (一度に大量投稿せず1日1本ずつ消化する。logs/youtube-posted.jsonで追跡)
 
 TikTok/Instagram/Xは審査待ちでSecrets未設定のため、今回はまだ組み込まない
 (Secretsが揃い次第、YouTubeと同様のスキップ可能なステップとして追加する想定)。
 """
 import argparse
+import json
 import os
+import re
 import subprocess
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -27,6 +31,7 @@ OUTPUT_DIR = os.path.join(REPO_ROOT, "output")
 PUBLIC_VIDEOS_DIR = os.path.join(REPO_ROOT, "public", "videos")
 BGM_PATH = os.path.join(REPO_ROOT, "assets", "bgm", "chill-lofi.mp3")
 HISTORY_PATH = os.path.join(REPO_ROOT, "logs", "theme-history.json")
+POSTED_LOG_PATH = os.path.join(REPO_ROOT, "logs", "youtube-posted.json")
 
 GITHUB_REPO = "sidekeitaro-collab/video-pipeline"
 JST = ZoneInfo("Asia/Tokyo")
@@ -59,6 +64,63 @@ def _ensure_git_identity() -> None:
         )
         if not current.stdout.strip():
             _run_git("config", key, value)
+
+
+def _load_posted_dates() -> list[str]:
+    if not os.path.exists(POSTED_LOG_PATH):
+        return []
+    with open(POSTED_LOG_PATH, "r", encoding="utf-8") as f:
+        try:
+            data = json.load(f)
+        except json.JSONDecodeError:
+            return []
+    return data if isinstance(data, list) else []
+
+
+def _save_posted_dates(dates: list[str]) -> None:
+    os.makedirs(os.path.dirname(POSTED_LOG_PATH) or ".", exist_ok=True)
+    with open(POSTED_LOG_PATH, "w", encoding="utf-8") as f:
+        json.dump(sorted(set(dates)), f, ensure_ascii=False, indent=2)
+
+
+def _theme_for_date(date_str: str) -> str:
+    """logs/theme-history.jsonからdate_strに対応するitem_themeを引く。見つからなければ
+    (theme_gen.pyの日付がUTC基準だった旧データとのズレ等)日付自体をフォールバックにする。"""
+    if not os.path.exists(HISTORY_PATH):
+        return date_str
+    with open(HISTORY_PATH, "r", encoding="utf-8") as f:
+        try:
+            history = json.load(f)
+        except json.JSONDecodeError:
+            return date_str
+    for entry in history if isinstance(history, list) else []:
+        if entry.get("date") == date_str:
+            return entry.get("item_theme", date_str)
+    return date_str
+
+
+def find_backlog_video(exclude_date: str) -> tuple[str, str, str] | None:
+    """public/videos/配下の未投稿(YouTube)バックログのうち、最も古い1本を返す。
+    (動画パス, 日付文字列, テーマ名) のタプル。無ければNone。"""
+    if not os.path.isdir(PUBLIC_VIDEOS_DIR):
+        return None
+
+    posted = set(_load_posted_dates())
+    candidates = []
+    for filename in os.listdir(PUBLIC_VIDEOS_DIR):
+        match = re.fullmatch(r"(\d{4}-\d{2}-\d{2})\.mp4", filename)
+        if not match:
+            continue
+        date_str = match.group(1)
+        if date_str == exclude_date or date_str in posted:
+            continue
+        candidates.append(date_str)
+
+    if not candidates:
+        return None
+
+    oldest = sorted(candidates)[0]
+    return os.path.join(PUBLIC_VIDEOS_DIR, f"{oldest}.mp4"), oldest, _theme_for_date(oldest)
 
 
 def publish_video(video_path: str, date_str: str, item_theme: str) -> str:
@@ -106,7 +168,7 @@ def run(dry_run: bool = False) -> None:
 
     print("[1/4] Generating today's theme (Claude)...")
     anthropic_api_key = _require_env("ANTHROPIC_API_KEY")
-    theme = generate_theme(anthropic_api_key, history_path=HISTORY_PATH)
+    theme = generate_theme(anthropic_api_key, history_path=HISTORY_PATH, date_str=date_str)
     print(f"  Theme: {theme['item_theme']}")
 
     print("[2/4] Generating look images (Gemini)...")
@@ -130,10 +192,35 @@ def run(dry_run: bool = False) -> None:
     video_url = publish_video(video_path, date_str, theme["item_theme"])
     print(f"  Published: {video_url}")
 
+    posted_dates = _load_posted_dates()
+
     # YouTubeはフラッグシップ媒体のため、失敗したら例外をそのまま伝播させて
     # ワークフローを失敗として可視化する(黙って握りつぶさない)。
     if _youtube_credentials_available():
         upload_to_youtube_shorts(video_path, theme["item_theme"])
+        posted_dates.append(date_str)
+
+        # 過去に生成したが投稿し損ねたバックログを、1日1本ずつ消化する
+        # (まとめて大量投稿しない)。
+        backlog = find_backlog_video(exclude_date=date_str)
+        if backlog:
+            backlog_path, backlog_date, backlog_theme = backlog
+            print(f"[backlog] Uploading leftover video from {backlog_date} ({backlog_theme})...")
+            upload_to_youtube_shorts(backlog_path, backlog_theme)
+            posted_dates.append(backlog_date)
+        else:
+            print("[backlog] No unposted backlog videos.")
+
+        _save_posted_dates(posted_dates)
+        _ensure_git_identity()
+        _run_git("add", POSTED_LOG_PATH)
+        # 投稿ログ以外に差分が無いこともあるため、commitが空になる場合はスキップする。
+        status = subprocess.run(
+            ["git", "diff", "--cached", "--quiet"], cwd=REPO_ROOT
+        )
+        if status.returncode != 0:
+            _run_git("commit", "-m", f"Update youtube-posted log ({date_str})")
+            _run_git("push")
     else:
         print("  [YouTube] SKIP (認証情報未設定)")
 

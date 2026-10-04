@@ -133,7 +133,7 @@ def _validate_theme(content: dict) -> None:
             )
 
 
-def generate_theme(api_key: str, history_path: str = "logs/theme-history.json") -> dict:
+def generate_theme(api_key: str, history_path: str = "logs/theme-history.json", date_str: str | None = None) -> dict:
     """本日のテーマ(item_theme)と7ルック分の服装差分(looks)をClaudeに生成させる。
 
     直近 HISTORY_LOOKBACK 件の item_theme を避けるようプロンプトに含め、生成に
@@ -166,7 +166,7 @@ def generate_theme(api_key: str, history_path: str = "logs/theme-history.json") 
     _validate_theme(content)
 
     history.append({
-        "date": datetime.now().strftime("%Y-%m-%d"),
+        "date": date_str or datetime.now().strftime("%Y-%m-%d"),
         "item_theme": content["item_theme"],
     })
     _save_history(history_path, history)
