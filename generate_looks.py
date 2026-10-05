@@ -19,6 +19,17 @@ from google import genai
 MODEL_ID = "gemini-3.1-flash-image"
 OUTPUT_DIR = "./output"
 
+# アスペクト比はプロンプト文字列の"--ar 9:16"ではなく、Interactions APIの
+# response_formatパラメータで指定する仕様(公式ドキュメントで確認済み。未指定時の
+# デフォルトは16:9で、9:16ではない)。image_sizeは画質と1枚あたりのコスト
+# ($0.067@1K, $0.101@2K)のトレードオフ、現在は1K(デフォルト)のまま。
+RESPONSE_FORMAT = {
+    "type": "image",
+    "mime_type": "image/png",
+    "aspect_ratio": "9:16",
+    "image_size": "1K",
+}
+
 # 画風・構図・技術指定。日によって変えず、ここを編集すれば毎日同じ新タッチで統一
 # される。現在はフラットなイラスト寄り(写実的な質感は避ける)。背景色は固定せず
 # theme_gen.generate_theme()が返すbackground_colorを都度差し込む(日替わり)。
@@ -117,7 +128,11 @@ def _require_env(name: str) -> str:
 def generate_base_character(api_key: str, base_prompt: str) -> bytes:
     """ベース参照画像(架空モデルのキャラクター固定用)を1枚生成する。"""
     client = genai.Client(api_key=api_key)
-    interaction = client.interactions.create(model=MODEL_ID, input=base_prompt)
+    interaction = client.interactions.create(
+        model=MODEL_ID,
+        input=base_prompt,
+        response_format=RESPONSE_FORMAT,
+    )
     return base64.b64decode(interaction.output_image.data)
 
 
@@ -134,6 +149,7 @@ def generate_look_variant(api_key: str, base_image_bytes: bytes, look_prompt: st
                 "mime_type": "image/png",
             },
         ],
+        response_format=RESPONSE_FORMAT,
     )
     return base64.b64decode(interaction.output_image.data)
 
