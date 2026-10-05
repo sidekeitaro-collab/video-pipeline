@@ -25,7 +25,9 @@ OUTPUT_DIR = "./output"
 # ($0.067@1K, $0.101@2K)のトレードオフ、現在は1K(デフォルト)のまま。
 RESPONSE_FORMAT = {
     "type": "image",
-    "mime_type": "image/png",
+    # response_format.mime_typeは'image/jpeg'のみ対応('image/png'は400エラー、
+    # 実機検証で確認済み)。
+    "mime_type": "image/jpeg",
     "aspect_ratio": "9:16",
     "image_size": "1K",
 }
@@ -146,7 +148,9 @@ def generate_look_variant(api_key: str, base_image_bytes: bytes, look_prompt: st
             {
                 "type": "image",
                 "data": base64.b64encode(base_image_bytes).decode("utf-8"),
-                "mime_type": "image/png",
+                # 出力はRESPONSE_FORMATでimage/jpeg固定にしたため、参照として送り返す
+                # base_image_bytesも実体はJPEG。
+                "mime_type": "image/jpeg",
             },
         ],
         response_format=RESPONSE_FORMAT,
@@ -173,7 +177,7 @@ def generate_all_looks(api_key: str, theme: dict, output_dir: str) -> tuple[str,
     base_prompt = build_base_prompt(theme["character_description"], background_color)
     print(f"[Gemini] Generating base character image (model: {MODEL_ID}, bg: {background_color})...")
     base_image_bytes = generate_base_character(api_key, base_prompt)
-    base_path = os.path.join(output_dir, "base.png")
+    base_path = os.path.join(output_dir, "base.jpg")
     save_image(base_image_bytes, base_path)
 
     looks = theme["looks"]
@@ -185,7 +189,7 @@ def generate_all_looks(api_key: str, theme: dict, output_dir: str) -> tuple[str,
         look_prompt = build_look_prompt(look["prompt_fragment"], look["pose_fragment"], background_color)
         try:
             look_bytes = generate_look_variant(api_key, base_image_bytes, look_prompt)
-            look_path = os.path.join(output_dir, f"look_{i:02d}.png")
+            look_path = os.path.join(output_dir, f"look_{i:02d}.jpg")
             save_image(look_bytes, look_path)
             look_paths.append(look_path)
         except Exception as exc:
@@ -208,7 +212,7 @@ def main() -> None:
     base_prompt = build_base_prompt(_TEST_CHARACTER_DESCRIPTION)
     print(f"[Gemini] Generating base character image (model: {MODEL_ID})...")
     base_image_bytes = generate_base_character(api_key, base_prompt)
-    save_image(base_image_bytes, os.path.join(OUTPUT_DIR, "base.png"))
+    save_image(base_image_bytes, os.path.join(OUTPUT_DIR, "base.jpg"))
 
     total = len(LOOK_PROMPTS)
     success_count = 0
@@ -218,7 +222,7 @@ def main() -> None:
         print(f"[Gemini] Generating look {i}/{total}...")
         try:
             look_bytes = generate_look_variant(api_key, base_image_bytes, look_prompt)
-            save_image(look_bytes, os.path.join(OUTPUT_DIR, f"look_{i:02d}.png"))
+            save_image(look_bytes, os.path.join(OUTPUT_DIR, f"look_{i:02d}.jpg"))
             success_count += 1
         except Exception as exc:
             # 1ルックの失敗で他のルック生成を止めない(全体はベスト・エフォートで進める)
