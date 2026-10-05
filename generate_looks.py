@@ -22,14 +22,17 @@ OUTPUT_DIR = "./output"
 # アスペクト比はプロンプト文字列の"--ar 9:16"ではなく、Interactions APIの
 # response_formatパラメータで指定する仕様(公式ドキュメントで確認済み。未指定時の
 # デフォルトは16:9で、9:16ではない)。image_sizeは画質と1枚あたりのコスト
-# ($0.067@1K, $0.101@2K)のトレードオフ、現在は1K(デフォルト)のまま。
+# ($0.067@1K, $0.101@2K)のトレードオフ、2026-10-05にユーザー承認の上2Kへ変更。
+# 既知リスク(Google AI Developer Forum報告): 2K/4Kはmulti-turn(画像参照あり)呼び出しで
+# 404になる場合がある——generate_look_variant()はbase_image_bytesを参照として渡す
+# multi-turn呼び出しのため、該当すればそこで顕在化する。dry-run実機検証で確認すること。
 RESPONSE_FORMAT = {
     "type": "image",
     # response_format.mime_typeは'image/jpeg'のみ対応('image/png'は400エラー、
     # 実機検証で確認済み)。
     "mime_type": "image/jpeg",
     "aspect_ratio": "9:16",
-    "image_size": "1K",
+    "image_size": "2K",
 }
 
 # 画風・構図・技術指定。日によって変えず、ここを編集すれば毎日同じ新タッチで統一
