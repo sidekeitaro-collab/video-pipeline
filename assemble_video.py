@@ -203,9 +203,10 @@ def main() -> None:
             frame_paths.append(dst)
             print(f"[Pillow] Rendered text overlay: look {i}/{len(LOOK_LABELS)}")
 
-        # BGMのパスはここ1箇所にまとめる。未設定(None)なら無音の動画を出力する。
-        # Pixabay Content License(商用可・帰属表示不要)下で入手した"Chill Lofi" by ZephiraMusic。
-        bgm_path = os.path.join(REPO_ROOT, "assets", "bgm", "chill-lofi.mp3")
+        # BGMのパスはここ1箇所にまとめる(CLIテスト用は固定でtrack_01、本番の
+        # ローテーションはmain.pyが担当)。未設定(None)なら無音の動画を出力する。
+        # 10曲ともPixabay Content License(商用可・帰属表示不要)。詳細はassets/bgm/CREDITS.md。
+        bgm_path = os.path.join(REPO_ROOT, "assets", "bgm", "track_01.mp3")
 
         build_video(frame_paths, bgm_path, os.path.join(REPO_ROOT, "output", "assembled_video.mp4"))
 

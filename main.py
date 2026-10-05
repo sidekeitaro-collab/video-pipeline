@@ -29,7 +29,9 @@ REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 GENERATED_ROOT = os.path.join(REPO_ROOT, "generated", "daily")
 OUTPUT_DIR = os.path.join(REPO_ROOT, "output")
 PUBLIC_VIDEOS_DIR = os.path.join(REPO_ROOT, "public", "videos")
-BGM_PATH = os.path.join(REPO_ROOT, "assets", "bgm", "chill-lofi.mp3")
+BGM_DIR = os.path.join(REPO_ROOT, "assets", "bgm")
+BGM_TRACK_COUNT = 10  # assets/bgm/track_01.mp3 〜 track_10.mp3 を順番にローテーション
+BGM_ROTATION_PATH = os.path.join(REPO_ROOT, "logs", "bgm-rotation.json")
 HISTORY_PATH = os.path.join(REPO_ROOT, "logs", "theme-history.json")
 POSTED_LOG_PATH = os.path.join(REPO_ROOT, "logs", "youtube-posted.json")
 
@@ -123,6 +125,35 @@ def find_backlog_video(exclude_date: str) -> tuple[str, str, str] | None:
     return os.path.join(PUBLIC_VIDEOS_DIR, f"{oldest}.mp4"), oldest, _theme_for_date(oldest)
 
 
+def _load_bgm_index() -> int:
+    if not os.path.exists(BGM_ROTATION_PATH):
+        return 0
+    with open(BGM_ROTATION_PATH, "r", encoding="utf-8") as f:
+        try:
+            data = json.load(f)
+        except json.JSONDecodeError:
+            return 0
+    return int(data.get("next_index", 0)) % BGM_TRACK_COUNT
+
+
+def _save_bgm_index(index: int) -> None:
+    os.makedirs(os.path.dirname(BGM_ROTATION_PATH) or ".", exist_ok=True)
+    with open(BGM_ROTATION_PATH, "w", encoding="utf-8") as f:
+        json.dump({"next_index": index % BGM_TRACK_COUNT}, f)
+
+
+def pick_bgm(advance: bool) -> str | None:
+    """assets/bgm/track_01.mp3〜track_10.mp3を順番に1曲ずつ選ぶ(11日目でtrack_01に戻る)。
+    advance=Trueの場合のみ次回用にインデックスを進めて保存する(dry-runでは進めない)。"""
+    index = _load_bgm_index()
+    path = os.path.join(BGM_DIR, f"track_{index + 1:02d}.mp3")
+    if not os.path.exists(path):
+        return None
+    if advance:
+        _save_bgm_index(index + 1)
+    return path
+
+
 def publish_video(video_path: str, date_str: str, item_theme: str) -> str:
     """完成動画をpublic/videos/YYYY-MM-DD.mp4としてコミット・pushし、rawのURLを返す。"""
     os.makedirs(PUBLIC_VIDEOS_DIR, exist_ok=True)
@@ -131,8 +162,12 @@ def publish_video(video_path: str, date_str: str, item_theme: str) -> str:
         dst.write(src.read())
 
     _ensure_git_identity()
-    # 重複回避に使うテーマ履歴も、CIランナーが毎回使い捨てのため同じコミットで書き戻す。
-    _run_git("add", public_path, HISTORY_PATH)
+    # 重複回避に使うテーマ履歴・BGMローテーション位置も、CIランナーが毎回使い捨てのため
+    # 同じコミットで書き戻す。
+    add_paths = [public_path, HISTORY_PATH]
+    if os.path.exists(BGM_ROTATION_PATH):
+        add_paths.append(BGM_ROTATION_PATH)
+    _run_git("add", *add_paths)
     _run_git("commit", "-m", f"Daily video: {item_theme} ({date_str})")
     _run_git("push")
 
@@ -178,7 +213,10 @@ def run(dry_run: bool = False) -> None:
     print(f"  Generated {len(look_paths)} looks (base: {base_path})")
 
     print("[3/4] Assembling video (ffmpeg)...")
-    bgm_path = BGM_PATH if os.path.exists(BGM_PATH) else None
+    # dry-runではローテーション位置を進めない(確認用の生成がバックログの1日分を
+    # 消費してしまわないように)。
+    bgm_path = pick_bgm(advance=not dry_run)
+    print(f"  BGM: {os.path.basename(bgm_path) if bgm_path else '(none)'}")
     video_path = os.path.join(OUTPUT_DIR, f"{date_str}.mp4")
     assemble(theme, look_paths, bgm_path, video_path)
     print(f"  Assembled: {video_path}")
