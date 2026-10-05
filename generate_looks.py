@@ -19,14 +19,17 @@ from google import genai
 MODEL_ID = "gemini-3.1-flash-image"
 OUTPUT_DIR = "./output"
 
-# 画風・背景・構図・技術指定。日によって変えず、ここを編集すれば毎日同じ新タッチで
-# 統一される。現在はフラットなイラスト寄り(写実的な質感は避ける)。
+# 画風・構図・技術指定。日によって変えず、ここを編集すれば毎日同じ新タッチで統一
+# される。現在はフラットなイラスト寄り(写実的な質感は避ける)。背景色は固定せず
+# theme_gen.generate_theme()が返すbackground_colorを都度差し込む(日替わり)。
 ART_STYLE_TEMPLATE = (
     "flat clean digital illustration style, crisp bold linework, cel-shaded with "
     "minimal flat color blocks, anime/manga-inspired, no photorealistic shading or "
-    "texture, solid light blue background (#C5E1F5), soft even lighting, subtle flat "
-    "shadow under feet, no text, no watermark, no logo, vertical portrait composition --ar 9:16"
+    "texture, solid background color ({background_color}), soft even lighting, subtle "
+    "flat shadow under feet, no text, no watermark, no logo, vertical portrait composition --ar 9:16"
 )
+
+DEFAULT_BACKGROUND_COLOR = "#C5E1F5"
 
 BASE_CHARACTER_TEMPLATE = (
     "fashion lookbook photo of a fictional {character_description}, "
@@ -37,25 +40,31 @@ BASE_CHARACTER_TEMPLATE = (
 # ベース画像には服装の記述が一切無い(キャラ/背景/構図のみ)ため、アイテムテーマは
 # ここではなく各ルックのプロンプト(LOOK_PROMPT_TEMPLATE)側にのみ差し込まれる。
 # ポーズ/表情はルックごとに変える(「same pose」は固定しない)——顔の同一性は
-# "same face"とベース画像参照(image-to-image)で担保する。
+# "same face"とベース画像参照(image-to-image)で担保する。背景色は同日の7ルック内
+# では固定(1本の動画として統一感を保つため、ルックごとには変えない)。
 LOOK_PROMPT_TEMPLATE = (
-    "same model, same face, same light blue background (#C5E1F5), full body shot, "
+    "same model, same face, same background color ({background_color}), full body shot, "
     "{pose_fragment}, wearing {prompt_fragment}, no text, no watermark, no logo --ar 9:16"
 )
 
 
-def build_base_prompt(character_description: str) -> str:
-    """theme_gen.generate_theme()のcharacter_descriptionを、画風/構図込みの完全な
-    ベース画像生成プロンプトに差し込む。"""
+def build_base_prompt(character_description: str, background_color: str = DEFAULT_BACKGROUND_COLOR) -> str:
+    """theme_gen.generate_theme()のcharacter_description/background_colorを、画風/構図
+    込みの完全なベース画像生成プロンプトに差し込む。"""
+    art_style = ART_STYLE_TEMPLATE.format(background_color=background_color)
     return BASE_CHARACTER_TEMPLATE.format(
-        character_description=character_description, art_style=ART_STYLE_TEMPLATE
+        character_description=character_description, art_style=art_style
     )
 
 
-def build_look_prompt(prompt_fragment: str, pose_fragment: str) -> str:
-    """theme_gen.generate_theme()のlooks[i]["prompt_fragment"]/["pose_fragment"]を、
-    キャラ/背景/技術指定込みの完全なルック生成プロンプトに差し込む。"""
-    return LOOK_PROMPT_TEMPLATE.format(prompt_fragment=prompt_fragment, pose_fragment=pose_fragment)
+def build_look_prompt(
+    prompt_fragment: str, pose_fragment: str, background_color: str = DEFAULT_BACKGROUND_COLOR
+) -> str:
+    """theme_gen.generate_theme()のlooks[i]["prompt_fragment"]/["pose_fragment"]と
+    background_colorを、キャラ/背景/技術指定込みの完全なルック生成プロンプトに差し込む。"""
+    return LOOK_PROMPT_TEMPLATE.format(
+        prompt_fragment=prompt_fragment, pose_fragment=pose_fragment, background_color=background_color
+    )
 
 
 # main()単体実行(CLIでの動作確認)用の固定テーマ。
@@ -144,8 +153,9 @@ def generate_all_looks(api_key: str, theme: dict, output_dir: str) -> tuple[str,
     """
     os.makedirs(output_dir, exist_ok=True)
 
-    base_prompt = build_base_prompt(theme["character_description"])
-    print(f"[Gemini] Generating base character image (model: {MODEL_ID})...")
+    background_color = theme.get("background_color", DEFAULT_BACKGROUND_COLOR)
+    base_prompt = build_base_prompt(theme["character_description"], background_color)
+    print(f"[Gemini] Generating base character image (model: {MODEL_ID}, bg: {background_color})...")
     base_image_bytes = generate_base_character(api_key, base_prompt)
     base_path = os.path.join(output_dir, "base.png")
     save_image(base_image_bytes, base_path)
@@ -156,7 +166,7 @@ def generate_all_looks(api_key: str, theme: dict, output_dir: str) -> tuple[str,
 
     for i, look in enumerate(looks, start=1):
         print(f"[Gemini] Generating look {i}/{len(looks)}: {look['product_name_ja']}...")
-        look_prompt = build_look_prompt(look["prompt_fragment"], look["pose_fragment"])
+        look_prompt = build_look_prompt(look["prompt_fragment"], look["pose_fragment"], background_color)
         try:
             look_bytes = generate_look_variant(api_key, base_image_bytes, look_prompt)
             look_path = os.path.join(output_dir, f"look_{i:02d}.png")

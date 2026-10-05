@@ -32,6 +32,10 @@ Each day you:
    doesn't feel static (e.g. hands in pockets with a slight smile, arms crossed looking
    confident, one hand adjusting the collar, looking over the shoulder, a relaxed stance
    with a neutral expression, etc).
+5. Pick ONE solid background color (hex) for the whole video that complements today's outfit
+   color palette as a set — it must stay the same across all {LOOK_COUNT} looks (that's what
+   keeps the video feeling like one coherent shoot), but should change day to day instead of
+   always being the same color.
 
 Output JSON only, no explanation, matching this exact schema:
 {{
@@ -39,6 +43,7 @@ Output JSON only, no explanation, matching this exact schema:
   "character_description": "English description of the model's hair, face, and build only
     (NOT clothing, NOT pose, NOT expression, NOT background/art style), e.g. 'young Japanese
     male model, mid-20s, 178cm athletic build, short wavy brown hair, sharp jawline, calm eyes'",
+  "background_color": "a hex color code for today's solid background, e.g. '#C5E1F5'",
   "looks": [
     {{
       "prompt_fragment": "English clothing description only, e.g. 'a navy oversized hoodie, black cargo pants, white sneakers'",
@@ -54,7 +59,10 @@ Rules:
 - character_description must NOT mention clothing, pose, expression, or the background. Those
   are handled separately.
 - Do NOT include technical/rendering instructions (aspect ratio, "no text", "no watermark",
-  art style, background color, etc) anywhere. Those are fixed elsewhere.
+  art style, etc) anywhere. Those are fixed elsewhere.
+- background_color must be a soft, muted, light pastel tone (similar spirit to '#C5E1F5') —
+  never pure white, pure black, or a highly saturated/neon color, since the on-screen white
+  text needs to stay readable against it and the overall look must stay clean and minimal.
 - prompt_fragment must be a short English clothing/accessory description only (what the model
   is wearing), suitable to be inserted directly after the word "wearing ".
 - pose_fragment must NOT mention clothing, face shape/hair, or the background.
@@ -64,6 +72,7 @@ Rules:
 - Pick an item_theme not on the avoid-list below, if one is given."""
 
 REQUIRED_LOOK_KEYS = ("prompt_fragment", "pose_fragment", "product_name_ja")
+HEX_COLOR_RE = re.compile(r"^#[0-9A-Fa-f]{6}$")
 
 
 def _extract_json(text: str) -> dict:
@@ -117,6 +126,12 @@ def _validate_theme(content: dict) -> None:
     if not str(content.get("character_description", "")).strip():
         raise ValueError(f"Claudeの出力に character_description がありません: {content}")
 
+    background_color = str(content.get("background_color", "")).strip()
+    if not HEX_COLOR_RE.match(background_color):
+        raise ValueError(
+            f"Claudeの出力の background_color が6桁hexではありません: {background_color!r}"
+        )
+
     looks = content.get("looks")
     if not isinstance(looks, list) or len(looks) != LOOK_COUNT:
         raise ValueError(
@@ -139,7 +154,7 @@ def generate_theme(api_key: str, history_path: str = "logs/theme-history.json", 
     直近 HISTORY_LOOKBACK 件の item_theme を避けるようプロンプトに含め、生成に
     成功したら history_path に新しい item_theme を追記して保存する。
 
-    戻り値: {"item_theme": str, "character_description": str,
+    戻り値: {"item_theme": str, "character_description": str, "background_color": str(hex),
              "looks": [{"prompt_fragment": str, "pose_fragment": str, "product_name_ja": str}, ...]} (7要素)
     """
     history = _load_history(history_path)
